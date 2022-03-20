@@ -25,9 +25,11 @@ var source = new List<string>();
 var lineRegex = new Regex(@"^([A-Z]+)_([0-9][0-9]):00([0-9a-f]{6})\s+([0-9a-f.]+)\s+([a-z.]+|\?\?)\s+([^;]+)(;.*)?$", RegexOptions.Compiled);
 var labelRegex = new Regex(@"^\s*[a-zA-Z0-9_]+:\s*(;.*)$", RegexOptions.Compiled);
 var functionRegex = new Regex(@"^;undefined .*\(\)\s*$", RegexOptions.Compiled);
-var extLabelRegex = new Regex(@"[A-Z]+_[0-9][0-9]:([A-Za-z0-9_]+)", RegexOptions.Compiled);
+var extLabelRegex = new Regex(@"[a-z]+_[0-9][0-9]:([a-z0-9_]+)", RegexOptions.Compiled);
 var arrowRegex = new Regex(@"=>[^, ]+", RegexOptions.Compiled);
-var indexRegex = new Regex(@"(D[0-7][bwl]?)\*\$1", RegexOptions.Compiled);
+var indexRegex = new Regex(@"(d[0-7])[bwl]?\*\$1", RegexOptions.Compiled);
+var dataRegisterSuffixRegex = new Regex(@"(d[0-7])[bw]", RegexOptions.Compiled);
+var regListRegex = new Regex(@"\{\s*([ad][0-7]\s*)+\}", RegexOptions.Compiled);
 int lastHunkIndex = -1;
 int hunkStartOffset = 0;
 int bssOffset = 0;
@@ -57,12 +59,12 @@ foreach (var line in export)
 
         if (match.Success)
         {
-            string hunkType = match.Groups[1].Value;
+            string hunkType = match.Groups[1].Value.ToUpper();
             int hunkIndex = int.Parse(match.Groups[2].Value); // 0-based
             int address = int.Parse(match.Groups[3].Value, NumberStyles.AllowHexSpecifier);
             string bytes = match.Groups[4].Value;
-            string opcode = match.Groups[5].Value;
-            string arguments = match.Groups[6].Value.TrimEnd();
+            string opcode = match.Groups[5].Value.ToLower();
+            string arguments = match.Groups[6].Value.TrimEnd().ToLower();
             string? comment = match.Groups.Count == 8 ? match.Groups[7].Value : null;
 
             void WriteBssData(int length)
@@ -155,20 +157,84 @@ foreach (var line in export)
                 if (result.StartsWith("$") || result.StartsWith("-$"))
                     result = "#" + result;
 
-                // TODO: replace ds "foo" by dc.b "foo",0
-                // TODO: replace DXb and DXw by DX but not for index
                 // TODO: jmp (AX) is added as jmp AX, so add the () back
 
                 result = extLabelRegex.Replace(result, match => match.Groups[1].Value);
                 result = arrowRegex.Replace(result, "");
                 result = indexRegex.Replace(result, match => match.Groups[1].Value);
+                result = dataRegisterSuffixRegex.Replace(result, match => match.Groups[1].Value);
+
+                if (regListRegex.IsMatch(result))
+                {
+                    result = regListRegex.Replace(result, ConvertRegList);
+                    result = result.Replace("sp", "(sp)");
+                }
 
                 return result;
+            }
+
+            if (opcode == "ds")
+            {
+                opcode = "dc.b";
+                arguments += ",0";
+            }
+            else if (opcode == "jmp" && arguments.Length == 2 && arguments[0] == 'a' && arguments[1] >= '0' && arguments[1] <= '6')
+            {
+                arguments = $"({arguments})";
             }
 
             source.Add(CreateLine(opcode, ProcessArgs(), null, comment));
         }
     }
+}
+
+static string ConvertRegList(Match match)
+{
+    var regs = new List<string>(match.Value.Split(new char[] { '{', ' ', '}' }, StringSplitOptions.RemoveEmptyEntries));
+    regs.Sort();
+    string replacement = "";
+
+    bool address = true;
+    List<int> indices = new();
+
+    foreach (var reg in regs)
+    {
+        bool data = reg[0] == 'd';
+
+        if (address && data)
+        {
+            if (indices.Count == 1)
+                replacement += $"/a{indices[0]}";
+            else if (indices.Count > 1)
+                replacement += $"/a{indices[0]}-a{indices[^1]}";
+
+            address = false;
+            indices.Clear();            
+            indices.Add(reg[1] - '0');
+        }
+        else
+        {
+            int index = reg[1] - '0';
+            if (indices.Count != 0 && indices[^1] != index - 1)
+            {
+                if (indices.Count == 1)
+                    replacement += $"/{(address ? "a" : "d")}{indices[0]}";
+                else if (indices.Count > 1)
+                    replacement += $"/{(address ? "a" : "d")}{indices[0]}-{(address ? "a" : "d")}{indices[^1]}";
+
+                indices.Clear();
+            }
+
+            indices.Add(index);
+        }
+    }
+
+    if (indices.Count == 1)
+        replacement += $"/{(address ? "a" : "d")}{indices[0]}";
+    else if (indices.Count > 1)
+        replacement += $"/{(address ? "a" : "d")}{indices[0]}-{(address ? "a" : "d")}{indices[^1]}";
+
+    return replacement.TrimStart('/');
 }
 
 File.WriteAllLines(args[1], source, Encoding.ASCII);
