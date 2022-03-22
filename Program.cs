@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using AmbermoonSourceror;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -32,6 +33,7 @@ var dataRegisterSuffixRegex = new Regex(@"(d[0-7])[bw]", RegexOptions.Compiled);
 var regListRegex = new Regex(@"\{\s*([ad][0-7]\s*)+\}", RegexOptions.Compiled);
 var stringNameRegex = new Regex(@"s_([^,; ]+)", RegexOptions.Compiled);
 var refArrowRegex = new Regex(@"\(->([^)]+)\)", RegexOptions.Compiled);
+var typedDataRegex = new Regex(@"^([A-Z]+)_([0-9][0-9]):00([0-9a-f]{6})\s+([0-9a-f.]+)\s+([A-Za-z]+)(\[[0-9]+\])?(;.*)?$", RegexOptions.Compiled);
 int lastHunkIndex = -1;
 int hunkStartOffset = 0;
 int bssOffset = 0;
@@ -44,6 +46,7 @@ int lastFunctionLine = -1;
 int lineNumber = 0;
 var hunkOffsets = new List<int>();
 Dictionary<int, HashSet<int>> unresolvedLabels = new();
+TypeParser? typeParser = null;
 
 foreach (var line in export)
 {
@@ -70,6 +73,25 @@ foreach (var line in export)
         continue;
     else
     {
+        if (typeParser is not null)
+        {
+            if (!line.StartsWith(' '))
+            {
+                typeParser.Output(source);
+                typeParser = null;
+            }
+            else
+            {
+                if (typeParser.ParseLine(line))
+                    continue;
+                else
+                {
+                    typeParser.Output(source);
+                    typeParser = null;
+                }
+            }
+        }
+
         var match = labelRegex.Match(content);
 
         if (match.Success)
@@ -301,13 +323,78 @@ foreach (var line in export)
             }
             else
             {
-                // Check for arrays, values, data, etc
+                var typedDataMatch = typedDataRegex.Match(content);
 
-                throw new Exception($"Invalid line [{lineNumber}]: " + Environment.NewLine + " " + line);
+                if (typedDataMatch.Success)
+                {
+                    string type = typedDataMatch.Groups[5].Value;
+                    var array = typedDataMatch.Groups.Count == 6 ? "" : typedDataMatch.Groups[6].Value;
+                    string comment = "";
+                    
+                    if (typedDataMatch.Groups.Count == 8)
+                    {
+                        comment = typedDataMatch.Groups[7].Value;
+                    }
+                    else if(array.Length != 0 && array[0] != '[')
+                    {
+                        comment = array;
+                        array = "";
+                    }
+
+                    typeParser = new TypeParser(type, array.Length == 0 ? null : int.Parse(array.Trim(new char[] { '[', ']' })));
+
+                    /*
+                     CODE_00:0021fa68    4c4541440021faa45...    WildcardReplace[7]                                                                                                                                              
+                       |_CODE_00:0021fa68    [0]                                 WildcardReplace                                                                                                                                                 
+                          |_CODE_00:0021fa68    WildcardText                        char[4]                         "LEAD"                                                                                                                          
+                             |_CODE_00:0021fa68    [0]                                 char                            'L'                                                                                                                             
+                             |_CODE_00:0021fa69    [1]                                 char                            'E'                                                                                                                             
+                             |_CODE_00:0021fa6a    [2]                                 char                            'A'                                                                                                                             
+                             |_CODE_00:0021fa6b    [3]                                 char                            'D'                                                                                                                             
+                          |_CODE_00:0021fa6c    ReplaceFunctionPtr                  addr                            FUN_ReplaceLeadWildcard                                                                                                         
+                       |_CODE_00:0021fa70    [1]                                 WildcardReplace                                                                                                                                                 
+                          |_CODE_00:0021fa70    WildcardText                        char[4]                         "SELF"                                                                                                                          
+                             |_CODE_00:0021fa70    [0]                                 char                            'S'                                                                                                                             
+                             |_CODE_00:0021fa71    [1]                                 char                            'E'                                                                                                                             
+                             |_CODE_00:0021fa72    [2]                                 char                            'L'                                                                                                                             
+                             |_CODE_00:0021fa73    [3]                                 char                            'F'                                                                                                                             
+                          |_CODE_00:0021fa74    ReplaceFunctionPtr                  addr                            FUN_ReplaceSelfWildcard                                                                                                         
+                       |_CODE_00:0021fa78    [2]                                 WildcardReplace                                                                                                                                                 
+                          |_CODE_00:0021fa78    WildcardText                        char[4]                         "CAST"                                                                                                                          
+                             |_CODE_00:0021fa78    [0]                                 char                            'C'                                                                                                                             
+                             |_CODE_00:0021fa79    [1]                                 char                            'A'                                                                                                                             
+                             |_CODE_00:0021fa7a    [2]                                 char                            'S'                                                                                                                             
+                             |_CODE_00:0021fa7b    [3]                                 char                            'T'                                                                                                                             
+                          |_CODE_00:0021fa7c    ReplaceFunctionPtr                  addr                            FUN_ReplaceCastWildcard
+                    */
+                }
+
+                // Check for arrays, values, data, etc
+                // Also do this here:
+                /*if (currentLabels.Count != 0)
+                {
+                    if (unresolvedLabels.TryGetValue(address, out var sourceIndices))
+                    {
+                        foreach (var s in sourceIndices)
+                            source[s] = source[s].Replace("<label>", currentLabels[0]);
+                        unresolvedLabels.Remove(address);
+                    }
+
+                    currentLabels.ForEach(currentLabel => labelAddresses.Add(currentLabel, address));
+                }
+
+                currentLabels.Clear();*/
+
+                //throw new Exception($"Invalid line [{lineNumber}]: " + Environment.NewLine + " " + line);
             }
         }
     }
 }
+
+// TODO: check remaining unsolved labels
+// TODO: convert "ushort" to "dw"
+
+
 
 /*foreach (var addressLine in addressLines)
 {
